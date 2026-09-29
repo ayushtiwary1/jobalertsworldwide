@@ -45,22 +45,44 @@ LANG_BLOCK = ["german","french","spanish","portuguese","italian","dutch","polish
  "mandarin","chinese","korean","vietnamese","thai","arabic","hebrew","russian","turkish","greek",
  "danish","swedish","norwegian","finnish","czech","hungarian","bulgarian","ukrainian",
  "indonesian","bahasa","tagalog","filipino"]
+GOOD_LOC_RE = re.compile(r"\b(worldwide|anywhere|global|all countries|india|bharat|apac|asia)\b", re.I)
 
-GOOD_LOC = ["worldwide","anywhere","global","remote","all countries","india","apac","asia",
- "distributed","international"]
-WORLDWIDE = ["worldwide","anywhere","all countries","global","work from anywhere","fully remote",
- "remote-first","remote first","100% remote","distributed team","india","apac"]
+WORLDWIDE = ["worldwide", "anywhere", "all countries", "global", "work from anywhere",
+             "location-independent", "no location restrictions"]
 
-COUNTRY_RE = re.compile(r"\b(usa|us|united states|americas|america|canada|uk|united kingdom|britain|"
- "england|europe|emea|germany|france|spain|portugal|italy|poland|netherlands|romania|ukraine|"
- "philippines|australia|zealand|brazil|mexico|argentina|colombia|chile|latam|nigeria|kenya|egypt|"
- "pakistan|bangladesh|sri lanka|nepal|china|japan|korea|singapore|malaysia|indonesia|vietnam|"
- "thailand|uae|dubai|saudi|qatar|israel|turkey|czech|hungary|bulgaria|greece|austria|switzerland|"
- "sweden|norway|denmark|finland|ireland|belgium)\b")
+# any country/region here (India is NOT in the list) in the location/title = reject
+LOC_COUNTRY_RE = re.compile(
+    r"\b(usa|us|u\.s\.|united states|america|americas|canada|mexico|brazil|argentina|colombia|chile|"
+    r"latam|uk|u\.k\.|united kingdom|britain|england|scotland|ireland|europe|emea|ceur|eeur|weur|"
+    r"germany|france|spain|portugal|italy|poland|netherlands|holland|romania|ukraine|czech|hungary|"
+    r"bulgaria|greece|austria|switzerland|sweden|norway|denmark|finland|belgium|philippines|"
+    r"australia|zealand|nigeria|kenya|egypt|pakistan|bangladesh|sri lanka|nepal|china|japan|korea|"
+    r"singapore|malaysia|indonesia|vietnam|thailand|uae|dubai|saudi|qatar|israel|turkey|"
+    r"north america|south america|central america|middle east|mena)\b", re.I)
 
-# "US hours" / "EST shift" in a title is GOOD for you (night coverage from India) — strip before country check
-TZ_STRIP = re.compile(r"\b(us|usa|est|cst|mst|pst|et|pt)\b\s*(hours?|timezone|time zone|shift|"
- "evenings?|nights?|mornings?|daytime|coverage|business)", re.I)
+# countries used inside description-scan (bare "us" excluded — it collides with the pronoun)
+DESC_COUNTRY = (r"(?:usa|u\.s\.|united states|canada|united kingdom|europe|emea|germany|france|spain|"
+    r"italy|poland|netherlands|romania|philippines|australia|brazil|mexico|argentina|colombia|"
+    r"singapore|japan|china|uae|dubai|israel|nigeria|kenya|egypt|pakistan|bangladesh|sri lanka|"
+    r"north america|latam|middle east|ireland|new zealand|vietnam|indonesia|malaysia|thailand)")
+
+# catches "must be based in X", "X residents only", "eligible to work in X", etc.
+RESIDE_RE = re.compile(
+    r"(?:must|should|will need to|need to|have to|required to)\s+(?:be\s+)?(?:currently\s+)?"
+    r"(?:located|based|resid\w+|living|situated)[^.;\n]{0,80}" + DESC_COUNTRY + r"\b"
+    r"|\b" + DESC_COUNTRY + r"\b[^.;\n]{0,40}\b(?:residents?|citizens?|nationals?)\b"
+    r"|(?:eligible|authorized|authorised|entitled|right)\s+to\s+work[^.;\n]{0,80}" + DESC_COUNTRY + r"\b"
+    r"|candidates?[^.;\n]{0,60}(?:based|located|living|resid\w+)[^.;\n]{0,30}(?:in|within|from)\s+"
+    + DESC_COUNTRY + r"\b"
+    r"|(?:open|available|hiring|recruiting|accepting applications)\s+(?:only\s+)?"
+    r"(?:to|in|for|from|within)[^.;\n]{0,40}" + DESC_COUNTRY + r"\b"
+    r"|(?:willing|required|need(ed)?|must)\s+to\s+relocat\w+[^.;\n]{0,40}" + DESC_COUNTRY + r"\b", re.I)
+
+TRUST_VAGUE_REMOTE = True  # bare "Remote" location on ATS jobs = accepted unless description restricts
+
+# "US hours / EST shift" in a title is GOOD for you (night coverage) — stripped before the country check
+TZ_STRIP = re.compile(r"\b(?:us|usa|est|cst|mst|pst|et|pt)\b\s*(?:hours?|timezone|time\s+zone|shift|"
+                      r"evenings?|nights?|mornings?|daytime|coverage|business)", re.I)
 
 ATS_RE = re.compile(r"https?://[^\s\"'<>()]*(?:greenhouse\.io|lever\.co|ashbyhq\.com|workable\.com|"
  "smartrecruiters\.com|recruitee\.com|bamboohr\.com|myworkdayjobs\.com|join\.com|teamtailor\.com|"
@@ -177,13 +199,17 @@ def region_ok(j):
     blob = t + " || " + loc + " || " + head
     if any(b in blob for b in HARD_BLOCK): return False
     if any(l in t for l in LANG_BLOCK): return False
-    t2 = TZ_STRIP.sub(" ", t)   # keep "Support (US hours)" — that's your night-shift sweet spot
-    if COUNTRY_RE.search(t2) or COUNTRY_RE.search(loc):
+    # 1) explicit good signals in the location line win instantly
+    if GOOD_LOC_RE.search(loc): return True
+    # 2) any other country/region named in the location -> hard reject (NO description override)
+    if LOC_COUNTRY_RE.search(re.sub(r"\bremote\b", " ", loc)): return False
+    # 3) country/region named in the title (after removing "US hours" phrases) -> reject
+    if LOC_COUNTRY_RE.search(TZ_STRIP.sub(" ", t)): return False
+    # 4) vague location ("Remote"/empty): scan description for restriction language
+    if RESIDE_RE.search(head): return False
+    if j["src"] in AGG or not TRUST_VAGUE_REMOTE:
         return any(w in head for w in WORLDWIDE)
-    if any(g in loc for g in GOOD_LOC): return True
-    if not loc:
-        return j["src"] not in AGG or any(w in head for w in WORLDWIDE)
-    return any(w in head for w in WORLDWIDE)
+    return True
 
 def _mail(m): return not any(b in m.group(0).lower() for b in BAD_MAIL)
 
